@@ -2,24 +2,20 @@
 #define MEMORY_INTERFACE_H
 
 #include "../common/Shared.h"
-#include "../table/Table.h"
 
 static int mTableSize[TABLE_COUNT];
 #if defined(DDR) or defined(HBM)
 static unsigned int mTableMemOffset[TABLE_COUNT];
 static int allocatedWordCount = 0;
-#elif defined(BRAM) or defined(URAM)
+#else
 static volatile LookupEntryBase * mTableMemPtr[TABLE_COUNT];
 #endif
 
-    // ----------------------------------
-	// ----- MemoryInterface class ------
-    // ----------------------------------
 class MemoryInterface
 {
 private:
 	MemoryInterface() {}
-    ~MemoryInterface() {}
+	~MemoryInterface() {}
 
 public:
 	static MemoryInterface& getInstance() {
@@ -41,7 +37,7 @@ public:
 		mTableMemOffset[table] = allocatedWordCount;
 		allocatedWordCount += (TS * wordCount);
 	}
-#elif defined(BRAM) or defined(URAM)
+#else
 	template<int TS, int MS, int AS, MatchActionTableType table>
 	void registerTable(volatile LookupEntryBase *ptr)
 	{
@@ -50,15 +46,11 @@ public:
 	}
 #endif
 
-    // ----------------------------------
-	// ------- Update an entry ----------
-    // ----------------------------------
 #if defined(DDR) or defined(HBM)
 	template<int TS, int MS, int AS, MatchActionTableType table>
 	void update_entry(unsigned int *memPtr, int index, const LookupEntry<MS, AS> &entry)
 	{
 #pragma HLS INLINE
-//#pragma HLS PIPELINE II=1
 		constexpr int wordCount = ((MS + AS + 1) + 31) / 32;
 		ap_uint<wordCount*32> rawEntry;
 		rawEntry.range(MS+AS, AS+1) = entry.key;
@@ -70,12 +62,11 @@ public:
 			memPtr[alignedIndex+i] = rawEntry.range(32*(i+1)-1, 32*i);
 		}
 	}
-#elif defined(BRAM) or defined(URAM)
-    template<int TS, int MS, int AS, MatchActionTableType table>
-	void update_entry(LookupEntry<MS, AS> *memPtr, int index, const LookupEntry<MS, AS> &entry)
+#else
+	template<int TS, int MS, int AS, MatchActionTableType table>
+	void update_entry(volatile LookupEntry<MS, AS> *memPtr, int index, const LookupEntry<MS, AS> &entry)
 	{
 #pragma HLS INLINE
-//#pragma HLS PIPELINE II=1
 		auto &e = memPtr[index];
 		e.key = entry.key;
 		e.value = entry.value;
@@ -83,9 +74,6 @@ public:
 	}
 #endif
 
-    // ----------------------------------
-	// -------- Delete an entry ---------
-    // ----------------------------------
 #if defined(DDR) or defined(HBM)
 	template<int TS, int MS, int AS, MatchActionTableType table>
 	bool delete_entry(unsigned int *memPtr, const int &index, const ap_uint<MS> &key, const ap_uint<AS> &value) const
@@ -104,14 +92,14 @@ public:
 			return true;
 		}
 		return false;
-    }
-#elif defined(BRAM) or defined(URAM)
+	}
+#else
 	template<int TS, int MS, int AS, MatchActionTableType table>
-	bool delete_entry(LookupEntry<MS, AS> *memPtr, const int &index, const ap_uint<MS> &key, const ap_uint<AS> &value) const
+	bool delete_entry(volatile LookupEntry<MS, AS> *memPtr, const int &index, const ap_uint<MS> &key, const ap_uint<AS> &value) const
 	{
 #pragma HLS INLINE
 		auto &e = memPtr[index];
-		if (e.valid && (e.key == key) && (e.value == value)) {
+		if (e.valid && (ap_uint<MS>(e.key) == key) && (ap_uint<AS>(e.value) == value)) {
 			e.valid = false;
 			return true;
 		}
@@ -119,15 +107,11 @@ public:
 	}
 #endif
 
-    // ----------------------------------
-	// -------- Search an index ---------
-    // ----------------------------------
 #if defined(DDR) or defined(HBM)
 	template<int TS, int MS, int AS, MatchActionTableType table>
 	bool search_index(const unsigned int *memPtr, const int &index, const ap_uint<MS> &key) const
 	{
 #pragma HLS INLINE
-//#pragma HLS PIPELINE II=1
 		constexpr int wordCount = ((MS + AS + 1) + 31) / 32;
 		ap_uint<wordCount*32> rawEntry;
 		int alignedIndex = mTableMemOffset[table] + index * wordCount;
@@ -136,26 +120,21 @@ public:
 			rawEntry.range(32*(i+1)-1, 32*i) = memPtr[alignedIndex+i];
 		}
 		return rawEntry[0] && (rawEntry.range(MS+AS, AS+1) == key);
-    }
-#elif defined(BRAM) or defined(URAM)
+	}
+#else
 	template<int TS, int MS, int AS, MatchActionTableType table>
-	bool search_index(const LookupEntry<MS, AS> *memPtr, const int &index, const ap_uint<MS> &key) const
+	bool search_index(const volatile LookupEntry<MS, AS> *memPtr, const int &index, const ap_uint<MS> &key) const
 	{
 #pragma HLS INLINE
-//#pragma HLS PIPELINE II=1
 		const auto &e = memPtr[index];
-		return e.valid && (e.key == key);
+		return e.valid && (ap_uint<MS>(e.key) == key);
 	}
 #endif
 
-    // ----------------------------------
-	// -------- Search an entry ---------
-	// ----------------------------------
 #if defined(DDR) or defined(HBM)
 	template<int TS, int MS, int AS, MatchActionTableType table>
 	bool search_entry(const unsigned int *memPtr, const int &index, const ap_uint<MS> &key, ap_uint<AS> &value) const
 	{
-//#pragma HLS INLINE
 #pragma HLS PIPELINE II=1
 		constexpr int wordCount = ((MS + AS + 1) + 31) / 32;
 		ap_uint<wordCount*32> rawEntry;
@@ -169,23 +148,20 @@ public:
 			return true;
 		}
 		return false;
-    }
-#elif defined(BRAM) or defined(URAM)
+	}
+#else
 	template<int TS, int MS, int AS, MatchActionTableType table>
 	bool search_entry(volatile LookupEntry<MS, AS> memPtr[TS], const int &index, const ap_uint<MS> &key, ap_uint<AS> &value) const
 	{
-//#pragma HLS INLINE
 #pragma HLS PIPELINE II=1
 		const auto &e = memPtr[index];
 		if (e.valid && (ap_uint<MS>(e.key) == key)) {
-			value = e.value;
+			value = ap_uint<AS>(e.value);
 			return true;
 		}
 		return false;
 	}
 #endif
-
 };
 
 #endif // MEMORY_INTERFACE_H
-

@@ -2,7 +2,7 @@
 #define MATCH_ACTION_TABLE_H
 
 #include "../common/Shared.h"
-#include "../header/Header.h"
+#include "../header/BaseHeader.h"
 #include "../ingress/MemoryInterface.h"
 
 // TS: Table Depth Size, MS: Match-key Size, AS: Action Size

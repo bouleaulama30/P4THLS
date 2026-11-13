@@ -2,150 +2,98 @@ import json
 import os
 from sys_utils import *
 
+
 def generate_serialize_function(header_name, fields):
-
-    def line_code(bit_mask, bit_shift, s1, s2):
-        line = ""
-        s3 = f"0x{bit_mask:X}"
-        s4 = f"{bit_shift}"
-        if (bit_mask == 0xFF) and (bit_shift == 0):
-            line += f"{s1} {s2};\n"
-        elif bit_mask == 0xFF:
-            line += f"{s1} ({s2} << {s4});\n"
-        elif bit_shift == 0:    
-            line += f"{s1} ({s2} & {s3});\n"
-        else:
-            line += f"{s1} ({s2} & {s3}) << {s4};\n"
-        return line
-
-    serialize_code = f"void serialize(unsigned char* d, {header_name} &hdr) {{\n"
+    serialize_code = f"inline void serialize(unsigned char* d, const {header_name} &hdr) {{\n"
     serialize_code += "#pragma HLS INLINE\n"
 
     byte_offset = 0
     bit_offset = 0
-    bit_mask = 0xFF
-    bit_shift = 0
 
     for field, bitwidth in fields:
-        if (bit_offset + bitwidth) <= 8:
-            # If the current field fits in the remaining bits of the current byte
-            bit_mask = (1 << bitwidth) - 1
-            bit_shift = 8 - bitwidth - bit_offset
-            s1 = f"    d[{byte_offset}] = " if bitwidth == 8 else f"    d[{byte_offset}] |="
-            s2 = f"hdr.{field}.to_uchar()"
-            serialize_code += line_code(bit_mask, bit_shift, s1, s2)
-            bit_offset += bitwidth
-        else:
-            # Handle fields that cross byte boundaries
-            while bitwidth > 0:
-                available_bits = 8 - bit_offset
-                if bitwidth <= available_bits:
-                    bit_mask = (1 << bitwidth) - 1
-                    bit_shift = bit_offset
-                    s1 = f"    d[{byte_offset}] = " if available_bits == 8 else f"    d[{byte_offset}] |="
-                    s2 = f"static_cast<unsigned char>(hdr.{field}.range({bitwidth - 1}, 0).to_uint())"
-                    serialize_code += line_code(bit_mask, bit_shift, s1, s2)
-                    bit_offset += bitwidth
-                    bitwidth = 0
-                elif bit_offset != 0:
-                    bit_mask = (1 << available_bits) - 1
-                    bit_shift = 0
-                    s1 = f"    d[{byte_offset}] = " if available_bits == 8 else f"    d[{byte_offset}] |="
-                    s2 = f"static_cast<unsigned char>(hdr.{field}.range({bitwidth - 1}, {bitwidth - available_bits}).to_uint())"
-                    serialize_code += line_code(bit_mask, bit_shift, s1, s2)
-                    bit_offset = 0
-                    bitwidth -= available_bits
-                    byte_offset += 1
-                else:
-                    bit_mask = 0xFF
-                    bit_shift = 0
-                    s1 = f"    d[{byte_offset}] ="
-                    s2 = f"static_cast<unsigned char>(hdr.{field}.range({bitwidth - 1}, {bitwidth - 8}).to_uint())"
-                    serialize_code += line_code(bit_mask, bit_shift, s1, s2)
-                    bit_offset = 0
-                    bitwidth -= available_bits
-                    byte_offset += 1
-        if bit_offset == 8:
-            byte_offset += 1
-            bit_offset = 0
+        total_w = bitwidth
+        rem = bitwidth
+        while rem > 0:
+            avail = 8 - bit_offset
+            take = min(rem, avail)
+            hi = rem - 1
+            lo = rem - take
+            shift = avail - take
+            mask = (1 << take) - 1
+
+            if total_w == take:
+                expr = f"static_cast<unsigned char>(hdr.{field}.to_uint())"
+            else:
+                expr = f"static_cast<unsigned char>(hdr.{field}.range({hi}, {lo}).to_uint())"
+
+            op = "=" if bit_offset == 0 else "|="
+
+            if take == 8:
+                serialize_code += f"    d[{byte_offset}] = {expr};\n"
+            elif shift == 0:
+                serialize_code += f"    d[{byte_offset}] {op} ({expr} & 0x{mask:X});\n"
+            else:
+                serialize_code += f"    d[{byte_offset}] {op} (({expr} & 0x{mask:X}) << {shift});\n"
+
+            rem -= take
+            bit_offset += take
+            if bit_offset == 8:
+                byte_offset += 1
+                bit_offset = 0
 
     serialize_code += "}\n"
     return serialize_code
 
 
 def generate_deserialize_function(header_name, fields):
-    
-    def line_code(bit_mask, bit_shift, s1, s2):
-        line = ""
-        s3 = f"0x{bit_mask:X}"
-        s4 = f"{bit_shift}"
-        if (bit_mask == 0xFF) and (bit_shift == 0):
-            line += f"{s1} {s2};\n"
-        elif bit_mask == 0xFF:
-            line += f"{s1} ({s2} >> {s4});\n"
-        elif bit_shift == 0:    
-            line += f"{s1} ({s2} & {s3});\n"
-        else:
-            line += f"{s1} ({s2} >> {s4}) & {s3};\n"
-        return line
-
-    deserialize_code = f"void deserialize(unsigned char* d, {header_name} &hdr) {{\n"
+    deserialize_code = f"inline void deserialize(const unsigned char* d, {header_name} &hdr) {{\n"
     deserialize_code += "#pragma HLS INLINE\n"
 
     byte_offset = 0
     bit_offset = 0
-    bit_shift = 0
-    bit_mask = 0xFF
 
     for field, bitwidth in fields:
-        if bit_offset + bitwidth <= 8:
-            # If the current field fits in the remaining bits of the current byte
-            bit_shift = 8 - bitwidth - bit_offset
-            bit_mask = (1 << bitwidth) - 1
-            s1 = f"    hdr.{field} ="
-            s2 = f"d[{byte_offset}]"
-            deserialize_code += line_code(bit_mask, bit_shift, s1, s2)
-            bit_offset += bitwidth
-        else:
-            # Handle fields that cross byte boundaries
-            while bitwidth > 0:
-                if bitwidth <= 8:
-                    bit_shift = 8 - bitwidth - bit_offset
-                    bit_mask = (1 << bitwidth) - 1
-                    #deserialize_code += f"    hdr.{field}.range({bitwidth-1}, 0) = (d[{byte_offset}] >> {bit_shift}) & 0x{bit_mask:X};\n"
-                    s1 = f"    hdr.{field}.range({bitwidth-1}, 0) ="
-                    s2 = f"d[{byte_offset}]"
-                    deserialize_code += line_code(bit_mask, bit_shift, s1, s2)
-                    bit_offset = bitwidth
-                    bitwidth = 0
-                else:
-                    #deserialize_code += f"    hdr.{field}.range({bitwidth-1}, {bitwidth-8+bit_offset}) = d[{byte_offset}];\n"
-                    bit_shift = 0
-                    bit_mask = 0xFF
-                    s1 = f"    hdr.{field}.range({bitwidth - 1}, {bitwidth - 8 + bit_offset}) ="
-                    s2 = f"d[{byte_offset}]"
-                    deserialize_code += line_code(bit_mask, bit_shift, s1, s2)
-                    bitwidth -= 8 - bit_offset
-                    bit_offset = 0
-                    byte_offset += 1
-        if bit_offset == 8:
-            byte_offset += 1
-            bit_offset = 0
+        total_w = bitwidth
+        rem = bitwidth
+        while rem > 0:
+            avail = 8 - bit_offset
+            take = min(rem, avail)
+            hi = rem - 1
+            lo = rem - take
+            shift = avail - take
+            mask = (1 << take) - 1
+
+            if total_w == take:
+                target = f"hdr.{field}"
+            else:
+                target = f"hdr.{field}.range({hi}, {lo})"
+
+            if take == 8:
+                deserialize_code += f"    {target} = d[{byte_offset}];\n"
+            elif shift == 0:
+                deserialize_code += f"    {target} = (d[{byte_offset}] & 0x{mask:X});\n"
+            else:
+                deserialize_code += f"    {target} = ((d[{byte_offset}] >> {shift}) & 0x{mask:X});\n"
+
+            rem -= take
+            bit_offset += take
+            if bit_offset == 8:
+                byte_offset += 1
+                bit_offset = 0
 
     deserialize_code += "}\n"
     return deserialize_code
 
 
 def get_header_size(headers, header_name):
-    header = headers.get(header_name, [])
+    header = headers.get(header_name, {})
     size = 0
     if header:
         for item in header.items():
             size += item[1]
-    return int(size / 8)
+    return int((size + 7) // 8)
 
 
-# Extract packet format (header names and sizes)
 def extract_headers(data):
     headers = {}
     header_types = {ht['name']: ht['fields'] for ht in data['header_types']}
@@ -160,19 +108,26 @@ def extract_headers(data):
 def gen_base_header(dir_path):
     code = "#ifndef BASE_HEADER_H\n" + \
            "#define BASE_HEADER_H\n\n" + \
+           "#include <ap_int.h>\n\n" + \
            "#endif // BASE_HEADER_H\n"
     with open(f'{dir_path}/BaseHeader.h', 'w') as f:
-            f.write(code)
+        f.write(code)
 
 
-# Converting extracted info into C++-compatible format
 def gen_cpp_code(headers, dir_path):
     gen_base_header(dir_path)
     for header_name, fields in headers.items():
         header_struct_name = f'{header_name.capitalize()}Header'
-        ctor_code = f"\t{header_struct_name}() {{}}\n"
+        init_list = ", ".join([f"{field_name}(0)" for field_name, _ in list(fields.items())])
+        if init_list:
+            ctor_code = f"\t{header_struct_name}() : {init_list} {{}}\n"
+        else:
+            ctor_code = f"\t{header_struct_name}() {{}}\n"
         x1 = ",\n".join([f"\t\t{field_name}(other.{field_name})" for field_name, _ in list(fields.items())])
-        copy_ctor_code = f"\t{header_struct_name}(const {header_struct_name} &other) :\n" + x1 + " {}\n" 
+        if x1:
+            copy_ctor_code = f"\t{header_struct_name}(const {header_struct_name} &other) :\n" + x1 + " {}\n"
+        else:
+            copy_ctor_code = f"\t{header_struct_name}(const {header_struct_name} &other) {{}}\n"
         fields_code = "\n".join([f"\tap_uint<{bitwidth}> {field_name};" for field_name, bitwidth in list(fields.items())])
         serialize_code = generate_serialize_function(header_struct_name, list(headers[header_name].items()))
         deserialize_code = generate_deserialize_function(header_struct_name, list(headers[header_name].items()))
@@ -196,5 +151,3 @@ def generate_headers(json, build_dir):
     headers = extract_headers(json)
     gen_cpp_code(headers, dir_path)
     store_object(headers, 'headers')
-
-    
